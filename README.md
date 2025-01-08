@@ -35,3 +35,7 @@ You can install the required Python libraries using `pip`:
 
 ```bash
 pip install mysql-connector-python pandas face_recognition Pillow numpy opencv-python
+```
+
+### The Specific Form
+![bc23828b1dc5b17edf011bae9842d38](https://github.com/user-attachments/assets/e61a15ba-a6d2-4bc2-810b-80c486d68241)
