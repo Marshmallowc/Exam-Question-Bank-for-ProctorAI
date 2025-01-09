@@ -3,7 +3,6 @@ import re
 import tkinter as tk
 import uuid
 from tkinter import filedialog, messagebox, ttk
-import cv2
 import datetime
 import pandas as pd
 import mysql.connector
@@ -11,12 +10,16 @@ import face_recognition
 import os
 import numpy as np
 import math
+import pymysql
 # 上传图片的函数
 from PIL import Image
-import numpy as np4
+import torch
+from transformers import BertTokenizer, BertModel
+from sklearn.metrics.pairwise import cosine_similarity
 
-# 存储所有人脸编码的列表
-encodings = []
+# 初始化 BERT 模型和分词器
+tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
+model = BertModel.from_pretrained('bert-base-chinese')
 
 # 数据库配置
 db_config = {
@@ -28,7 +31,60 @@ db_config = {
 }
 
 
+def get_sentence_embedding(sentence):
+    """
+    获取句子的 BERT 向量表示
+    :param sentence: 输入句子
+    :return: 句子向量
+    """
+    inputs = tokenizer(sentence, return_tensors='pt', truncation=True, padding=True)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    # 使用 [CLS] 标记的输出作为句子向量
+    sentence_embedding = outputs.last_hidden_state[:, 0, :].numpy()
+    return sentence_embedding
 
+def is_duplicate_question(content, similarity_threshold=0.85):
+    """
+    检查给定的题目内容在数据库中是否有高相似度的题目
+    :param content: 待检查的题目内容
+    :param similarity_threshold: 相似度阈值，默认0.85
+    :return: 如果存在高相似度的题目，返回 True；否则返回 False
+    """
+
+    try:
+        # 连接到 MySQL 数据库
+        connection = pymysql.connect(**db_config)
+        cursor = connection.cursor()
+
+        # 查询数据库中的所有题目内容
+        cursor.execute("SELECT content FROM t_text_content")  # 请根据实际表名和字段名修改
+        existing_questions = cursor.fetchall()
+
+        # 获取待检查题目的向量表示
+        content_embedding = get_sentence_embedding(content)
+
+        # 遍历数据库中的题目，计算相似度
+        for (existing_question,) in existing_questions:
+            existing_embedding = get_sentence_embedding(existing_question)
+            similarity = cosine_similarity(content_embedding, existing_embedding)[0][0]
+            if similarity >= similarity_threshold:
+                print(f"检测到重复题目：\"{content}\" 与已存在题目相似度: {similarity:.2f}")
+                return True
+
+        return False
+
+    except Exception as error:
+        print(f"数据库操作失败: {error}")
+        return False
+
+    finally:
+        if connection:
+            cursor.close()
+            connection.close()
+
+# 存储所有人脸编码的列表
+encodings = []
 
 def create_connection():
     connection = mysql.connector.connect(**db_config)
@@ -202,10 +258,14 @@ def upload_tests():
     knowledge_str = [str(item) for item in glb_knowledge_points]
     glb_corrects_str = [str(item) for item in glb_corrects]
 
+    dep_num = 0
+    success_num = 0
     for qtype, score, difficult, correct, knowledge, content in zip(glb_question_types, glb_scores, glb_difficults, glb_corrects_str, knowledge_str, glb_contents):
+
+
         # 插入t_text_content并记录插入的id
-        print(knowledge)
-        print(type(knowledge))
+        # print(knowledge)
+        # print(type(knowledge))
 
         # 根据type生成t_text_content中的content
         if qtype >= 1 and qtype <= 5:
@@ -221,7 +281,7 @@ def upload_tests():
             question_content = extract_question(content, qtype)
             options = re.findall(r'([A-D]\.\s*.*)', content)
             if len(options) == 0:
-                print("开始匹配第二次")
+                # print("开始匹配第二次")
                 options = re.findall(r'([A-D]．\s*.*)', content)
 
             question_item_objects = []
@@ -256,7 +316,15 @@ def upload_tests():
                 question_data = result
 
             json_output = json.dumps(question_data, ensure_ascii=False, indent=4)
-            print(json_output)
+            # print(json_output)
+
+            # json_output与数据库中的题目进行比对，实现去重操作
+            if is_duplicate_question(json_output):
+                print("该题目已存在")
+                dep_num += 1
+            else:
+                print("成功导入")
+                success_num += 1
 
             # 插入数据库
             connection = create_connection()
@@ -264,6 +332,8 @@ def upload_tests():
             insert_t_question(connection, qtype, score, difficult, correct, current_id, knowledge)
         else:
             messagebox.showerror("错误", "题目类型错误")
+    print(f"成功导入{success_num}道题目")
+    print(f"成功去重{dep_num}道题目")
     messagebox.showinfo("成功", "成功插入数据库")
 
 
